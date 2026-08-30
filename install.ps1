@@ -41,6 +41,7 @@ if (Get-Command cargo -ErrorAction SilentlyContinue) {
     Log "Rust not found — installing via winget..."
     winget install --id Rustlang.Rustup -e --accept-source-agreements --accept-package-agreements
     Warn "You may need to restart this terminal for PATH changes to take effect, then re-run this script to build."
+    Warn "If the build later fails with a linker error, install the 'Desktop development with C++' workload via the Visual Studio Build Tools: https://visualstudio.microsoft.com/visual-cpp-build-tools/"
     exit 0
 }
 

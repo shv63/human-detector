@@ -3,11 +3,12 @@
 # install.sh — sets up human-detector on Linux or macOS.
 #
 # What it does:
-#   1. Installs ffmpeg if it's not already on PATH (apt/dnf/pacman/brew).
-#   2. Installs Rust via rustup if `cargo` isn't already on PATH.
-#   3. Copies .env.example to .env (if .env doesn't exist yet) and reminds you to fill it in.
-#   4. Builds the release binary.
-#   5. On Linux, optionally installs a systemd --user service so it runs continuously
+#   1. Installs a C compiler/linker if missing (needed to build openssl-sys).
+#   2. Installs ffmpeg if it's not already on PATH (apt/dnf/pacman/brew).
+#   3. Installs Rust via rustup if `cargo` isn't already on PATH.
+#   4. Copies .env.example to .env (if .env doesn't exist yet) and reminds you to fill it in.
+#   5. Builds the release binary.
+#   6. On Linux, optionally installs a systemd --user service so it runs continuously
 #      in the background and starts on login.
 #
 # Usage:
@@ -25,7 +26,42 @@ die()  { printf '\033[1;31mError:\033[0m %s\n' "$1" >&2; exit 1; }
 OS="$(uname -s)"
 
 # ---------------------------------------------------------------------------
-# 1. ffmpeg
+# 1. C toolchain (needed to build openssl-sys and friends)
+# ---------------------------------------------------------------------------
+if command -v cc >/dev/null 2>&1 || command -v gcc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1; then
+    log "C compiler/linker already installed"
+else
+    log "No C compiler found (needed to build openssl-sys) — installing..."
+    case "$OS" in
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update -y
+                sudo apt-get install -y build-essential pkg-config
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf groupinstall -y "Development Tools"
+                sudo dnf install -y pkgconf-pkg-config
+            elif command -v pacman >/dev/null 2>&1; then
+                sudo pacman -Sy --noconfirm base-devel pkgconf
+            else
+                die "Couldn't detect a supported package manager (apt/dnf/pacman). Install a C compiler (gcc/clang) manually, then re-run this script."
+            fi
+            ;;
+        Darwin)
+            log "Triggering Xcode Command Line Tools install (a system dialog may appear)..."
+            xcode-select --install 2>/dev/null || true
+            until command -v cc >/dev/null 2>&1; do
+                warn "Waiting for Xcode Command Line Tools install to finish..."
+                sleep 5
+            done
+            ;;
+        *)
+            die "Unsupported OS ($OS) for automatic C toolchain install. Install a C compiler manually, then re-run this script."
+            ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
+# 2. ffmpeg
 # ---------------------------------------------------------------------------
 if command -v ffmpeg >/dev/null 2>&1; then
     log "ffmpeg already installed ($(command -v ffmpeg))"
@@ -57,7 +93,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Rust toolchain
+# 3. Rust toolchain
 # ---------------------------------------------------------------------------
 if command -v cargo >/dev/null 2>&1; then
     log "Rust already installed ($(cargo --version))"
@@ -69,7 +105,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. .env
+# 4. .env
 # ---------------------------------------------------------------------------
 if [ -f .env ]; then
     log ".env already exists — leaving it as is"
@@ -79,7 +115,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. Build
+# 5. Build
 # ---------------------------------------------------------------------------
 log "Building release binary (this can take a couple of minutes the first time)..."
 cargo build --release
@@ -88,7 +124,7 @@ BIN_PATH="$SCRIPT_DIR/target/release/human-detector"
 log "Built: $BIN_PATH"
 
 # ---------------------------------------------------------------------------
-# 5. Optional systemd --user service (Linux only)
+# 6. Optional systemd --user service (Linux only)
 # ---------------------------------------------------------------------------
 if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
     read -r -p "Install a systemd --user service so this runs continuously in the background? [y/N] " REPLY
