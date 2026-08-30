@@ -1,5 +1,6 @@
 use anyhow::{bail, Context, Result};
 use tokio::process::Command;
+use tracing::warn;
 
 /// Captures a single JPEG frame from the webcam by shelling out to `ffmpeg`.
 ///
@@ -32,13 +33,79 @@ pub async fn capture_frame(camera_input: &str) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Records a short H.264 MP4 clip from the webcam by shelling out to `ffmpeg`.
+/// Lowest bitrate we'll drop to when backing off to hit a size target — below this the
+/// clip stops being worth sending at all.
+const MIN_VIDEO_BITRATE_KBPS: u64 = 100;
+/// Highest bitrate we'll ever request — 640px-wide footage gains little past this, so a
+/// generous size budget over a short clip shouldn't push quality (and file size) beyond it.
+const MAX_VIDEO_BITRATE_KBPS: u64 = 2500;
+/// How many encode attempts to make before giving up on hitting `max_bytes`.
+const MAX_ENCODE_ATTEMPTS: u32 = 3;
+/// Safety margin subtracted from `max_bytes` — MP4 container overhead and VBV bitrate
+/// variance mean a clip targeted at exactly the cap can still land slightly over it.
+const SIZE_SAFETY_MARGIN: f64 = 0.85;
+
+/// Records a short H.264 MP4 clip from the webcam by shelling out to `ffmpeg`, sized to
+/// try to fit under `max_bytes` (e.g. Discord's 8MB webhook attachment cap).
 ///
-/// The clip is kept small (scaled down, no audio, a fairly aggressive CRF) since Discord
-/// webhook attachments are capped at 8MB on non-boosted servers — a few seconds of video
-/// fits comfortably, but a long `duration_secs` on a high-res camera may not.
-pub async fn capture_video(camera_input: &str, duration_secs: u64) -> Result<Vec<u8>> {
+/// Rather than a fixed quality setting, the target bitrate is derived from
+/// `max_bytes / duration_secs`, and ffmpeg is given a matching `-maxrate`/`-bufsize` so
+/// the output is capped near that size instead of varying with scene content. If the
+/// resulting file still comes out over `max_bytes` (VBV isn't a hard guarantee), it
+/// retries at a lower bitrate up to `MAX_ENCODE_ATTEMPTS` times, then returns the
+/// smallest attempt made (with a warning) even if it's still slightly over.
+pub async fn capture_video(camera_input: &str, duration_secs: u64, max_bytes: u64) -> Result<Vec<u8>> {
+    let mut bitrate_kbps = target_bitrate_kbps(max_bytes, duration_secs);
+    let mut best: Option<Vec<u8>> = None;
+
+    for attempt in 1..=MAX_ENCODE_ATTEMPTS {
+        let bytes = encode_clip(camera_input, duration_secs, bitrate_kbps).await?;
+        let size = bytes.len() as u64;
+
+        if size <= max_bytes {
+            return Ok(bytes);
+        }
+
+        warn!(
+            "video clip attempt {attempt}/{MAX_ENCODE_ATTEMPTS} was {size} bytes, over the \
+             {max_bytes} byte target at {bitrate_kbps}kbps"
+        );
+
+        let smaller_than_best = best.as_ref().map(|b| size < b.len() as u64).unwrap_or(true);
+        if smaller_than_best {
+            best = Some(bytes);
+        }
+
+        if bitrate_kbps <= MIN_VIDEO_BITRATE_KBPS {
+            break;
+        }
+        bitrate_kbps = (bitrate_kbps * 2 / 3).max(MIN_VIDEO_BITRATE_KBPS);
+    }
+
+    let bytes = best.expect("at least one encode attempt always runs");
+    warn!(
+        "sending oversized video clip anyway ({} bytes > {max_bytes} byte target) — \
+         consider a shorter VIDEO_DURATION_SECS",
+        bytes.len()
+    );
+    Ok(bytes)
+}
+
+/// Computes a target video bitrate (in kbps) so that `duration_secs` of footage should
+/// land under `max_bytes`, clamped to a sane quality range.
+fn target_bitrate_kbps(max_bytes: u64, duration_secs: u64) -> u64 {
+    let duration_secs = duration_secs.max(1);
+    let target_bits = (max_bytes as f64) * SIZE_SAFETY_MARGIN * 8.0;
+    let kbps = (target_bits / duration_secs as f64 / 1000.0) as u64;
+    kbps.clamp(MIN_VIDEO_BITRATE_KBPS, MAX_VIDEO_BITRATE_KBPS)
+}
+
+/// Encodes one `duration_secs` clip at the given target bitrate.
+async fn encode_clip(camera_input: &str, duration_secs: u64, bitrate_kbps: u64) -> Result<Vec<u8>> {
     let tmp = std::env::temp_dir().join(format!("human-detector-{}.mp4", std::process::id()));
+
+    let bitrate = format!("{bitrate_kbps}k");
+    let bufsize = format!("{}k", bitrate_kbps * 2);
 
     let status = ffmpeg_command(camera_input)
         .args([
@@ -51,8 +118,12 @@ pub async fn capture_video(camera_input: &str, duration_secs: u64) -> Result<Vec
             "libx264",
             "-preset",
             "ultrafast",
-            "-crf",
-            "28",
+            "-b:v",
+            &bitrate,
+            "-maxrate",
+            &bitrate,
+            "-bufsize",
+            &bufsize,
             "-pix_fmt",
             "yuv420p",
             "-movflags",

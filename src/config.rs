@@ -34,6 +34,10 @@ pub struct Config {
     pub notify_media: NotifyMedia,
     /// Length of the video clip to record, in seconds, when notify_media is Video.
     pub video_duration_secs: u64,
+    /// Discord webhook attachment size cap, in bytes — the video encoder targets a
+    /// bitrate that should keep clips under this. Default matches Discord's 8MB cap for
+    /// non-boosted servers; raise it if your server is boosted (50MB / 100MB).
+    pub max_attachment_bytes: u64,
 }
 
 impl Config {
@@ -79,6 +83,11 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
+            max_attachment_bytes: env::var("MAX_ATTACHMENT_MB")
+                .ok()
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|mb| (mb * 1024.0 * 1024.0) as u64)
+                .unwrap_or(8 * 1024 * 1024),
         })
     }
 }

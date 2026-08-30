@@ -88,13 +88,16 @@ Logging is via `tracing`; set `RUST_LOG=debug` for more detail.
 | `CAMERA_INPUT`        | no       | OS-specific (see `.env.example`)                              | The device string passed to ffmpeg |
 | `NOTIFY_MEDIA`        | no       | `photo`                                                       | `photo` attaches the triggering frame; `video` records and attaches a short clip |
 | `VIDEO_DURATION_SECS` | no       | `5`                                                            | Length of the clip when `NOTIFY_MEDIA=video` |
+| `MAX_ATTACHMENT_MB`   | no       | `8`                                                            | Target size cap for video clips; raise to 50/100 if your Discord server is boosted |
 | `ATTACH_MEDIA`        | no       | `true`                                                        | Set to `false` for a text-only notification with no attachment |
 
 Note on video mode: the clip is recorded *after* detection fires, so it's a short
 post-trigger clip (whatever the subject does in the next `VIDEO_DURATION_SECS`
-seconds) rather than a pre-trigger buffer of what led up to it. Keep the duration short
-— Discord webhook attachments are capped at 8MB on non-boosted servers, and the clip is
-already scaled down and compressed to help stay under that.
+seconds) rather than a pre-trigger buffer of what led up to it. The encoder targets a
+bitrate computed from `MAX_ATTACHMENT_MB` and `VIDEO_DURATION_SECS`, and automatically
+retries at a lower bitrate (up to a couple of times) if a clip still comes out over
+that size — so a longer duration trades off against per-frame quality rather than
+risking an oversized upload.
 
 ## Notes and caveats
 

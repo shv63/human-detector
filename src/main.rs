@@ -124,7 +124,12 @@ async fn tick(client: &reqwest::Client, cfg: &Config, last_notified: &mut Option
             }),
             NotifyMedia::Video => {
                 info!("recording {}s video clip for notification", cfg.video_duration_secs);
-                video_bytes = camera::capture_video(&cfg.camera_input, cfg.video_duration_secs).await?;
+                video_bytes = camera::capture_video(
+                    &cfg.camera_input,
+                    cfg.video_duration_secs,
+                    cfg.max_attachment_bytes,
+                )
+                .await?;
                 Some(Attachment {
                     bytes: &video_bytes,
                     filename: "detection.mp4",
