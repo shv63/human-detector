@@ -6,7 +6,8 @@ mod nim;
 use anyhow::Result;
 use chrono::Local;
 use clap::Parser;
-use config::Config;
+use config::{Config, NotifyMedia};
+use discord::Attachment;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
@@ -42,19 +43,28 @@ async fn main() -> Result<()> {
     run_loop(&client, &cfg).await
 }
 
-/// Single-shot mode: check one image file and exit. Does not apply the cooldown.
+fn detection_message() -> String {
+    format!(
+        "🚨 Human detected at {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S")
+    )
+}
+
+/// Single-shot mode: check one image file and exit. Does not apply the cooldown, and
+/// always attaches the still image regardless of NOTIFY_MEDIA — there's no live camera
+/// to pull a video clip from.
 async fn run_once(client: &reqwest::Client, cfg: &Config, path: &str) -> Result<()> {
     info!("checking {path}");
     let bytes = tokio::fs::read(path).await?;
     let found = nim::detect_human(client, cfg, &bytes).await?;
     if found {
         info!("human detected — sending Discord notification");
-        let message = format!(
-            "🚨 Human detected at {}",
-            Local::now().format("%Y-%m-%d %H:%M:%S")
-        );
-        let attachment = if cfg.attach_image { Some(bytes.as_slice()) } else { None };
-        discord::notify(client, &cfg.discord_webhook_url, &message, attachment).await?;
+        let attachment = cfg.attach_media.then(|| Attachment {
+            bytes: &bytes,
+            filename: "detection.jpg",
+            mime_type: "image/jpeg",
+        });
+        discord::notify(client, &cfg.discord_webhook_url, &detection_message(), attachment).await?;
     } else {
         info!("no human detected");
     }
@@ -65,8 +75,8 @@ async fn run_once(client: &reqwest::Client, cfg: &Config, path: &str) -> Result<
 /// detection at most once per `cooldown_secs`.
 async fn run_loop(client: &reqwest::Client, cfg: &Config) -> Result<()> {
     info!(
-        "starting monitor: polling every {}s, cooldown {}s, camera input \"{}\"",
-        cfg.poll_interval_secs, cfg.cooldown_secs, cfg.camera_input
+        "starting monitor: polling every {}s, cooldown {}s, media {:?}, camera input \"{}\"",
+        cfg.poll_interval_secs, cfg.cooldown_secs, cfg.notify_media, cfg.camera_input
     );
 
     let mut last_notified: Option<Instant> = None;
@@ -99,12 +109,32 @@ async fn tick(client: &reqwest::Client, cfg: &Config, last_notified: &mut Option
     }
 
     info!("human detected — sending Discord notification");
-    let message = format!(
-        "🚨 Human detected at {}",
-        Local::now().format("%Y-%m-%d %H:%M:%S")
-    );
-    let attachment = if cfg.attach_image { Some(frame.as_slice()) } else { None };
-    discord::notify(client, &cfg.discord_webhook_url, &message, attachment).await?;
+
+    // Video is recorded fresh, after detection: it's a short post-trigger clip, not a
+    // pre-trigger rolling buffer (that would need continuous background recording).
+    let video_bytes;
+    let attachment = if !cfg.attach_media {
+        None
+    } else {
+        match cfg.notify_media {
+            NotifyMedia::Photo => Some(Attachment {
+                bytes: &frame,
+                filename: "detection.jpg",
+                mime_type: "image/jpeg",
+            }),
+            NotifyMedia::Video => {
+                info!("recording {}s video clip for notification", cfg.video_duration_secs);
+                video_bytes = camera::capture_video(&cfg.camera_input, cfg.video_duration_secs).await?;
+                Some(Attachment {
+                    bytes: &video_bytes,
+                    filename: "detection.mp4",
+                    mime_type: "video/mp4",
+                })
+            }
+        }
+    };
+
+    discord::notify(client, &cfg.discord_webhook_url, &detection_message(), attachment).await?;
     *last_notified = Some(Instant::now());
 
     Ok(())

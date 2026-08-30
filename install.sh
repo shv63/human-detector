@@ -4,11 +4,12 @@
 #
 # What it does:
 #   1. Installs a C compiler/linker if missing (needed to build openssl-sys).
-#   2. Installs ffmpeg if it's not already on PATH (apt/dnf/pacman/brew).
-#   3. Installs Rust via rustup if `cargo` isn't already on PATH.
-#   4. Copies .env.example to .env (if .env doesn't exist yet) and reminds you to fill it in.
-#   5. Builds the release binary.
-#   6. On Linux, optionally installs a systemd --user service so it runs continuously
+#   2. Installs OpenSSL dev headers + pkg-config if missing (also needed for openssl-sys).
+#   3. Installs ffmpeg if it's not already on PATH (apt/dnf/pacman/brew).
+#   4. Installs Rust via rustup if `cargo` isn't already on PATH.
+#   5. Copies .env.example to .env (if .env doesn't exist yet) and reminds you to fill it in.
+#   6. Builds the release binary.
+#   7. On Linux, optionally installs a systemd --user service so it runs continuously
 #      in the background and starts on login.
 #
 # Usage:
@@ -36,12 +37,11 @@ else
         Linux)
             if command -v apt-get >/dev/null 2>&1; then
                 sudo apt-get update -y
-                sudo apt-get install -y build-essential pkg-config
+                sudo apt-get install -y build-essential
             elif command -v dnf >/dev/null 2>&1; then
                 sudo dnf groupinstall -y "Development Tools"
-                sudo dnf install -y pkgconf-pkg-config
             elif command -v pacman >/dev/null 2>&1; then
-                sudo pacman -Sy --noconfirm base-devel pkgconf
+                sudo pacman -Sy --noconfirm base-devel
             else
                 die "Couldn't detect a supported package manager (apt/dnf/pacman). Install a C compiler (gcc/clang) manually, then re-run this script."
             fi
@@ -61,7 +61,42 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. ffmpeg
+# 2. OpenSSL dev headers + pkg-config (needed to build openssl-sys — a separate
+#    check from the C toolchain above, since one can be present without the other)
+# ---------------------------------------------------------------------------
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists openssl 2>/dev/null; then
+    log "OpenSSL dev headers already installed"
+else
+    log "OpenSSL dev headers (or pkg-config) not found — installing..."
+    case "$OS" in
+        Linux)
+            if command -v apt-get >/dev/null 2>&1; then
+                sudo apt-get update -y
+                sudo apt-get install -y pkg-config libssl-dev
+            elif command -v dnf >/dev/null 2>&1; then
+                sudo dnf install -y pkgconf-pkg-config openssl-devel
+            elif command -v pacman >/dev/null 2>&1; then
+                sudo pacman -Sy --noconfirm pkgconf openssl
+            else
+                die "Couldn't detect a supported package manager (apt/dnf/pacman). Install OpenSSL dev headers (libssl-dev / openssl-devel) and pkg-config manually, then re-run this script."
+            fi
+            ;;
+        Darwin)
+            if ! command -v brew >/dev/null 2>&1; then
+                die "Homebrew not found. Install it from https://brew.sh, then re-run this script (or run 'brew install openssl pkg-config' yourself)."
+            fi
+            brew install openssl pkg-config
+            # Homebrew's openssl is keg-only; point pkg-config at it for this build.
+            export PKG_CONFIG_PATH="$(brew --prefix openssl)/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+            ;;
+        *)
+            die "Unsupported OS ($OS) for automatic OpenSSL install. Install OpenSSL dev headers manually, then re-run this script."
+            ;;
+    esac
+fi
+
+# ---------------------------------------------------------------------------
+# 3. ffmpeg
 # ---------------------------------------------------------------------------
 if command -v ffmpeg >/dev/null 2>&1; then
     log "ffmpeg already installed ($(command -v ffmpeg))"
@@ -93,7 +128,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. Rust toolchain
+# 4. Rust toolchain
 # ---------------------------------------------------------------------------
 if command -v cargo >/dev/null 2>&1; then
     log "Rust already installed ($(cargo --version))"
@@ -105,7 +140,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 4. .env
+# 5. .env
 # ---------------------------------------------------------------------------
 if [ -f .env ]; then
     log ".env already exists — leaving it as is"
@@ -115,7 +150,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5. Build
+# 6. Build
 # ---------------------------------------------------------------------------
 log "Building release binary (this can take a couple of minutes the first time)..."
 cargo build --release
@@ -124,7 +159,7 @@ BIN_PATH="$SCRIPT_DIR/target/release/human-detector"
 log "Built: $BIN_PATH"
 
 # ---------------------------------------------------------------------------
-# 6. Optional systemd --user service (Linux only)
+# 7. Optional systemd --user service (Linux only)
 # ---------------------------------------------------------------------------
 if [ "$OS" = "Linux" ] && command -v systemctl >/dev/null 2>&1; then
     read -r -p "Install a systemd --user service so this runs continuously in the background? [y/N] " REPLY

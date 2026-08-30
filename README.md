@@ -9,8 +9,9 @@ using an NVIDIA NIM vision-language model to do the "is there a person here?" ch
 2. It sends that frame to a NIM vision-language model (default:
    `meta/llama-3.2-11b-vision-instruct`) with the question "is there a human in this
    image?", using NIM's OpenAI-compatible chat-completions API.
-3. If the model says yes, it posts to your Discord webhook (with the frame attached,
-   by default) — but not more than once per `COOLDOWN_SECS`, so it won't spam you.
+3. If the model says yes, it posts to your Discord webhook — with either the triggering
+   photo or a short video clip attached (your choice, see `NOTIFY_MEDIA` below) — but
+   not more than once per `COOLDOWN_SECS`, so it won't spam you.
 
 ## Prerequisites
 
@@ -43,11 +44,11 @@ Windows (PowerShell):
 .\install.ps1
 ```
 
-Either script installs ffmpeg and Rust if they're missing, creates `.env` from
-`.env.example`, and builds the release binary. On Linux it also offers to set up a
-`systemd --user` service so it keeps running in the background and starts on login.
-You still need to edit `.env` afterwards to add your `NIM_API_KEY` and
-`DISCORD_WEBHOOK_URL`.
+Either script installs a C compiler, OpenSSL dev headers, ffmpeg, and Rust if any are
+missing, creates `.env` from `.env.example`, and builds the release binary. On Linux it
+also offers to set up a `systemd --user` service so it keeps running in the background
+and starts on login. You still need to edit `.env` afterwards to add your `NIM_API_KEY`
+and `DISCORD_WEBHOOK_URL`.
 
 ### Option B: manual
 
@@ -85,7 +86,15 @@ Logging is via `tracing`; set `RUST_LOG=debug` for more detail.
 | `POLL_INTERVAL_SECS`  | no       | `10`                                                          | How often to capture + check a frame |
 | `COOLDOWN_SECS`       | no       | `300`                                                         | Minimum gap between two Discord notifications |
 | `CAMERA_INPUT`        | no       | OS-specific (see `.env.example`)                              | The device string passed to ffmpeg |
-| `ATTACH_IMAGE`        | no       | `true`                                                        | Attach the triggering frame to the Discord message |
+| `NOTIFY_MEDIA`        | no       | `photo`                                                       | `photo` attaches the triggering frame; `video` records and attaches a short clip |
+| `VIDEO_DURATION_SECS` | no       | `5`                                                            | Length of the clip when `NOTIFY_MEDIA=video` |
+| `ATTACH_MEDIA`        | no       | `true`                                                        | Set to `false` for a text-only notification with no attachment |
+
+Note on video mode: the clip is recorded *after* detection fires, so it's a short
+post-trigger clip (whatever the subject does in the next `VIDEO_DURATION_SECS`
+seconds) rather than a pre-trigger buffer of what led up to it. Keep the duration short
+— Discord webhook attachments are capped at 8MB on non-boosted servers, and the clip is
+already scaled down and compressed to help stay under that.
 
 ## Notes and caveats
 
